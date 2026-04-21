@@ -1,0 +1,160 @@
+# US Macroeconomic Calibration — 2024 vintage
+# All parameters calibrated to US 2019 pre-COVID data unless noted.
+# Update by creating a new file (e.g. us_2025.yaml), never modify in place.
+
+production:
+  # Capital share of income in the Cobb-Douglas production function Y = A * K^alpha * L^(1-alpha)
+  # Source: BLS multifactor productivity accounts; Gollin (2002) adjusted
+  capital_share: 0.35
+
+  # Annual physical + economic depreciation rate on capital
+  # Source: BEA Fixed Assets accounts; 0.10 includes both physical wear and economic obsolescence
+  # Note: K/Y ~ alpha/(rho+delta). With alpha=0.35, rho=0.04, delta=0.10 → K/Y=2.5 ✓
+  depreciation_rate: 0.10
+
+  # Total factor productivity level (normalized; baseline = 1.0)
+  tfp_level: 1.0
+
+households:
+  # Annual discount rate (rho); implies ~4% time preference
+  # Implies steady-state K/Y ratio ~2.5 at baseline
+  discount_rate: 0.04
+
+  # Intertemporal elasticity of substitution (sigma)
+  # How willing households are to shift consumption across time
+  # Source: Hall (1988) lower bound; Gruber (2013) ~0.5
+  ies: 0.5
+
+  # Frisch elasticity of labor supply (both extensive + intensive margin)
+  # Source: Chetty et al. (2011) meta-analysis; 0.5 is defensible middle estimate
+  frisch_elasticity: 0.5
+
+  # Sensitivity of household savings rate to after-tax return on capital
+  # Higher values → more capital accumulation response to capital tax cuts
+  saving_rate_sensitivity: 0.3
+
+income_distribution:
+  # All shares sum to 1.0 across quintiles Q1 (bottom 20%) through Q5 (top 20%).
+  # Q5 is split into Q5_bottom (80-99th pct) and Q5_top (top 1%) for finer distributional analysis.
+  # Sources: CBO income distribution data 2023; IRS Statistics of Income (SOI)
+
+  # Share of total pre-tax labor income accruing to each group
+  labor_income_shares:
+    Q1: 0.03
+    Q2: 0.08
+    Q3: 0.14
+    Q4: 0.23
+    Q5_bottom: 0.38   # 80th-99th percentile
+    Q5_top: 0.14      # top 1%
+
+  # Share of total capital income (dividends, interest, rents) accruing to each group
+  capital_income_shares:
+    Q1: 0.01
+    Q2: 0.03
+    Q3: 0.07
+    Q4: 0.15
+    Q5_bottom: 0.44
+    Q5_top: 0.30
+
+  # Share of realized capital gains accruing to each group
+  # Source: IRS SOI data; highly concentrated at top
+  capital_gains_shares:
+    Q1: 0.00
+    Q2: 0.01
+    Q3: 0.04
+    Q4: 0.11
+    Q5_bottom: 0.40
+    Q5_top: 0.44
+
+  # Share of total consumption expenditure by group
+  # Source: BLS Consumer Expenditure Survey; NBER TAXSIM
+  consumption_shares:
+    Q1: 0.08
+    Q2: 0.12
+    Q3: 0.17
+    Q4: 0.23
+    Q5_bottom: 0.27
+    Q5_top: 0.13
+
+  # Annual savings rate as fraction of pre-tax income, by group
+  # Source: Dynan, Skinner, Zeldes (2004); negative for Q1 reflects dissaving
+  savings_rates:
+    Q1: -0.01
+    Q2: 0.05
+    Q3: 0.10
+    Q4: 0.18
+    Q5_bottom: 0.28
+    Q5_top: 0.45
+
+government:
+  # Federal + state/local primary spending as fraction of GDP (excludes debt service)
+  spending_gdp_ratio: 0.35
+
+  # Baseline means-tested transfers as fraction of GDP (SNAP, Medicaid, EITC, etc.)
+  # Separate from any new policy prebates modeled by TaxPolicy
+  baseline_transfers_gdp_ratio: 0.08
+
+  # Poverty-line consumption as fraction of median household consumption
+  # Used to size VAT prebates. Source: Census Bureau SPM 2023
+  poverty_line_consumption_share: 0.38
+
+externality:
+  # Tons of CO2-equivalent per dollar of GDP (proxy for carbon-intensive activity)
+  # Source: EPA Inventory of US GHG Emissions 2019; GDP from BEA
+  carbon_intensity_per_gdp: 0.0004
+
+  # Social cost of carbon, $/ton CO2 (central estimate)
+  # Source: EPA 2023 revised SCC ($51 in 2020 dollars, inflated)
+  social_cost_carbon: 190.0
+
+  # Share of consumption expenditure that is "carbon-intensive" (energy, transportation, etc.)
+  # Used to assign Pigouvian tax incidence by quintile
+  carbon_consumption_shares:
+    Q1: 0.10
+    Q2: 0.13
+    Q3: 0.15
+    Q4: 0.17
+    Q5_bottom: 0.20
+    Q5_top: 0.25
+
+land:
+  # Land value as fraction of GDP
+  # Source: Davis & Heathcote (2007); Knoll, Schularick, Steger (2017)
+  land_value_gdp_ratio: 0.80
+
+  # Annual land rent as fraction of GDP (implied by cap rate ~5%)
+  land_rent_gdp_ratio: 0.04
+
+  # Land share of total measured capital stock (land / (land + reproducible capital))
+  land_share_of_capital: 0.40
+
+  # Fraction of land value accruing to each income group
+  # Heavily concentrated; Source: Fed Distributional Financial Accounts 2023
+  land_ownership_shares:
+    Q1: 0.01
+    Q2: 0.02
+    Q3: 0.06
+    Q4: 0.15
+    Q5_bottom: 0.44
+    Q5_top: 0.32
+
+macroeconomic:
+  # Fraction of capital that is internationally mobile (0 = closed, 1 = small open economy)
+  # In closed economy: capital bears corporate taxes. In open: workers bear them via lower wages.
+  # THIS IS THE MOST CONTESTED ASSUMPTION in corporate tax incidence. Default: 0.5 (intermediate)
+  capital_mobility: 0.5
+
+  # Elasticity of taxable income (ETI) — how much reported taxable income shrinks per % rate increase
+  # Source: Saez, Slemrod, Giertz (2012); 0.25 is most defensible central estimate
+  elasticity_of_taxable_income: 0.25
+
+  # Elasticity of capital income reporting to capital income tax rate
+  # Higher than ETI for labor due to more avoidance margins
+  capital_income_eti: 0.50
+
+  # Baseline steady-state capital-output ratio (K/Y)
+  # Used as calibration target to verify model is correctly calibrated
+  target_capital_output_ratio: 2.5
+
+  # Baseline labor share of income (cross-check against 1 - capital_share)
+  target_labor_share: 0.65
