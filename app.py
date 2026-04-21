@@ -367,18 +367,20 @@ def _policy_controls(key: str, default_preset: str) -> TaxPolicy:
                                     "and a higher threshold, then resumes above that threshold. "
                                     "Proposal to extend SS solvency by taxing very high earners."
                                 ))
+        # Always render; clamp stored value so it never falls below the dynamic min
+        _donut_min = float(pr_ceil) + 0.5
+        _donut_default = float(np.clip(sv("pr_donut", 5.0), _donut_min, 15.0))
+        pr_donut_raw = st.slider(
+            "SS resumes above (× median)", _donut_min, 15.0, _donut_default, 0.5,
+            key=f"{key}_pr_donut", disabled=not use_donut,
+            help="SS gap: no SS from the ceiling to here. SS then resumes on income above this.",
+        )
+        pr_donut = pr_donut_raw if use_donut else 0.0
         if use_donut:
-            pr_donut = st.slider(
-                "SS resumes above (× median)", float(pr_ceil) + 0.5, 15.0,
-                float(max(sv("pr_donut", 5.0), pr_ceil + 0.5)), 0.5, key=f"{key}_pr_donut",
-                help=f"SS gap: no SS from {pr_ceil:.1f}× to here. SS then resumes on income above this.",
-            )
             st.caption(
                 f"Donut: SS pauses from {pr_ceil:.1f}× (≈${pr_ceil*80:.0f}k) "
-                f"to {pr_donut:.1f}× (≈${pr_donut*80:.0f}k) median income."
+                f"to {pr_donut_raw:.1f}× (≈${pr_donut_raw*80:.0f}k) median income."
             )
-        else:
-            pr_donut = 0.0
 
         use_bcap = st.checkbox("SS Benefit Cap (means-testing)", key=f"{key}_use_bcap",
                                help=(
@@ -386,27 +388,32 @@ def _policy_controls(key: str, default_preset: str) -> TaxPolicy:
                                    "SS contributions become a net tax (no additional benefit). "
                                    "Models partial means-testing of Social Security."
                                ))
+        _bcap_default = float(np.clip(sv("pr_bcap", 4.0), 2.0, 10.0))
+        pr_bcap_raw = st.slider(
+            "Benefit cap (× median income)", 2.0, 10.0, _bcap_default, 0.5,
+            key=f"{key}_pr_bcap", disabled=not use_bcap,
+            help="High earners above this level receive no additional SS benefit.",
+        )
+        pr_bcap = pr_bcap_raw if use_bcap else 0.0
         if use_bcap:
-            pr_bcap = st.slider(
-                "Benefit cap (× median income)", 2.0, 10.0,
-                float(max(sv("pr_bcap", 4.0), 2.0)), 0.5, key=f"{key}_pr_bcap",
-                help="High earners above this level receive no additional SS benefit.",
-            )
-            st.caption(f"Benefit cap at {pr_bcap:.1f}× (≈${pr_bcap*80:.0f}k) median — SS above cap is net tax.")
-        else:
-            pr_bcap = 0.0
+            st.caption(f"Benefit cap at {pr_bcap_raw:.1f}× (≈${pr_bcap_raw*80:.0f}k) median — SS above cap is net tax.")
 
     with tab_cons:
         cons_rate = st.slider("Standard rate", 0.0, 0.35, sv("cons_rate", 0.02), 0.01, key=f"{key}_cons_rate")
         use_tiers = st.checkbox("Tiered rates (France-style VAT)", key=f"{key}_use_tiers")
-        if use_tiers:
-            cons_ess = st.slider("Essentials rate (food, medicine)", 0.0, cons_rate, sv("cons_ess", max(0.0, cons_rate - 0.05)), 0.01, key=f"{key}_cons_ess",
+        # Always render tier sliders (disabled when not in use) so widget keys are stable.
+        # Clamp stored defaults to valid ranges — cons_rate changes, stored value may be stale.
+        _ess_max = max(cons_rate, 0.005)  # avoid zero-range slider
+        _ess_default = float(np.clip(sv("cons_ess", 0.0), 0.0, _ess_max))
+        cons_ess_raw = st.slider("Essentials rate (food, medicine)", 0.0, _ess_max, _ess_default, 0.005,
+                                 key=f"{key}_cons_ess", disabled=not use_tiers,
                                  help="Q1 spends ~55% of budget on essentials; Q5_top only ~15%.")
-            cons_lux = st.slider("Luxury rate", cons_rate, 0.40, sv("cons_lux", min(0.40, cons_rate + 0.05)), 0.01, key=f"{key}_cons_lux",
+        _lux_default = float(np.clip(sv("cons_lux", min(0.40, cons_rate + 0.05)), cons_rate, 0.40))
+        cons_lux_raw = st.slider("Luxury rate", cons_rate, 0.40, _lux_default, 0.005,
+                                 key=f"{key}_cons_lux", disabled=not use_tiers,
                                  help="Q5_top spends ~35% of budget on luxury goods; Q1 only ~3%.")
-        else:
-            cons_ess = None
-            cons_lux = None
+        cons_ess = cons_ess_raw if use_tiers else None
+        cons_lux = cons_lux_raw if use_tiers else None
         prebate = st.slider("Prebate fraction", 0.0, 1.0, sv("prebate", 0.0), 0.05, key=f"{key}_prebate",
                             help="Fraction of poverty-line consumption returned as equal per-capita cash transfer.")
         st.divider()
@@ -434,22 +441,20 @@ def _policy_controls(key: str, default_preset: str) -> TaxPolicy:
         )
         cg_ordinary = st.checkbox(
             "Tax at ordinary income rates (same as wages)",
-            value=sv("cg_ordinary", False),
             key=f"{key}_cg_ordinary",
             help="Eliminates the preferential capital gains rate — gains taxed at the same rate as labor income.",
         )
+        # Always render the rate slider; just disable it when "ordinary income" is checked.
+        cg_rate_raw = st.slider("Capital gains rate", 0.0, 0.50, sv("cg_rate", 0.238), 0.01,
+                                key=f"{key}_cg_rate", disabled=cg_ordinary)
+        cg_rate = l5 if cg_ordinary else cg_rate_raw
         if cg_ordinary:
-            cg_rate = l5  # top ordinary rate from Income Tax tab
-            st.caption(f"CG rate set to top ordinary rate: **{cg_rate*100:.1f}%**")
-        else:
-            cg_rate = st.slider("Capital gains rate", 0.0, 0.50, sv("cg_rate", 0.238), 0.01, key=f"{key}_cg_rate")
+            st.caption(f"Rate overridden to top ordinary rate: **{l5*100:.1f}%**")
 
-        cg_idx  = st.checkbox("Inflation-indexed (only real gains taxed)",
-                              value=sv("cg_idx", False), key=f"{key}_cg_idx")
+        cg_idx = st.checkbox("Inflation-indexed (only real gains taxed)", key=f"{key}_cg_idx")
 
         remove_stepup = st.checkbox(
             "Remove stepped-up basis (tax gains at death)",
-            value=sv("remove_stepup", False),
             key=f"{key}_remove_stepup",
             help=(
                 "Current law: heirs inherit assets at fair market value — unrealized gains "
