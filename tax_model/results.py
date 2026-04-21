@@ -48,6 +48,7 @@ class RevenueBreakdown:
     Positive = inflow to government; negative = net transfer/rebate outflow.
     """
     labor_income_tax: float = 0.0
+    payroll_tax: float = 0.0           # FICA (employee + employer)
     consumption_tax: float = 0.0
     land_value_tax: float = 0.0
     corporate_tax: float = 0.0
@@ -60,6 +61,7 @@ class RevenueBreakdown:
     def total(self) -> float:
         return (
             self.labor_income_tax
+            + self.payroll_tax
             + self.consumption_tax
             + self.land_value_tax
             + self.corporate_tax

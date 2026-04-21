@@ -10,6 +10,7 @@ Standard chart set for a PolicyComparison:
   3. Distributional incidence: burden change by income group
   4. Sensitivity tornado (for sweep results)
   5. Monte Carlo credible interval strip chart
+  6. Transition path: GDP, capital, wage over time (from transition.py)
 """
 
 from __future__ import annotations
@@ -298,6 +299,73 @@ def plot_monte_carlo(
         fontsize=9,
     )
     fig.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# 6. Transition path chart
+# ---------------------------------------------------------------------------
+
+def plot_transition(transition_result) -> plt.Figure:
+    """
+    Three-panel chart showing the transition path from baseline to reform SS.
+
+      Panel 1: GDP over time (normalized to baseline = 1.0)
+      Panel 2: Capital stock over time
+      Panel 3: Tax burden change by income group over time
+
+    The vertical dashed line at t=0 marks the policy change.
+    The horizontal dashed lines show the reform steady state.
+    """
+    tr = transition_result
+    t  = tr.period_numbers
+
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+
+    # --- Panel 1: GDP ---
+    ax = axes[0]
+    ax.plot(t, tr.gdp_path, color=_BLUE, linewidth=2)
+    ax.axhline(tr.reform_ss.gdp,   color=_GREEN, linestyle="--", linewidth=1,
+               label=f"Reform SS ({tr.reform_ss.gdp:.3f})")
+    ax.axhline(tr.baseline_ss.gdp, color=_GREY,  linestyle=":",  linewidth=1,
+               label=f"Baseline SS ({tr.baseline_ss.gdp:.3f})")
+    ax.set_xlabel("Period")
+    ax.set_ylabel("GDP (baseline = 1.0)")
+    ax.set_title("GDP transition path")
+    ax.legend(fontsize=8)
+
+    # --- Panel 2: Capital ---
+    ax = axes[1]
+    ax.plot(t, tr.capital_path, color=_ORANGE, linewidth=2)
+    ax.axhline(tr.reform_ss.capital_stock,   color=_GREEN, linestyle="--", linewidth=1)
+    ax.axhline(tr.baseline_ss.capital_stock, color=_GREY,  linestyle=":",  linewidth=1)
+    ax.set_xlabel("Period")
+    ax.set_ylabel("Capital stock (baseline = 1.0)")
+    ax.set_title("Capital stock transition")
+
+    # --- Panel 3: Incidence over time for key groups ---
+    ax = axes[2]
+    colors_by_group = {
+        "Q1": _GREEN, "Q3": _BLUE, "Q5_top": _RED,
+    }
+    for group, color in colors_by_group.items():
+        burden_path = tr.incidence_path(group)
+        ax.plot(t, [b * 100 for b in burden_path],
+                color=color, linewidth=2, label=group)
+    ax.axhline(0, color=_DARK, linewidth=0.8)
+    ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=100, decimals=1))
+    ax.set_xlabel("Period")
+    ax.set_ylabel("Tax burden (% of pre-tax income)")
+    ax.set_title("Incidence over transition\n(Q1, Q3, Q5_top)")
+    ax.legend(fontsize=8)
+
+    fig.suptitle(
+        f"Transition path: [{tr.baseline_ss.policy_label}] → [{tr.reform_ss.policy_label}]\n"
+        f"Long-run GDP change: {tr.long_run_gdp_change():+.2f}%  |  "
+        f"Approx. convergence: period {tr.years_to_convergence()}",
+        fontsize=10, fontweight="bold",
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.90])
     return fig
 
 

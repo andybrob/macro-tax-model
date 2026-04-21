@@ -280,15 +280,18 @@ class Economy:
     def _effective_labor_wedge(self, policy: TaxPolicy) -> float:
         """
         Effective marginal tax wedge on labor income.
-        Combines income tax + consumption tax (which reduces the real
-        purchasing power of the after-tax wage).
+        Combines income tax + payroll tax + consumption tax (which reduces the
+        real purchasing power of the after-tax wage).
         """
-        from .government import _avg_effective_labor_rate
-        τ_L    = _avg_effective_labor_rate(policy, self.cal)
-        τ_C    = policy.consumption.rate
-        # Combined wedge: 1 − (1−τ_L)(1−τ_C_eff) where τ_C_eff = τ_C/(1+τ_C)
+        from .government import _avg_effective_labor_rate, _avg_effective_payroll_rate
+        τ_L      = _avg_effective_labor_rate(policy, self.cal)
+        τ_payroll = _avg_effective_payroll_rate(policy, self.cal)
+        τ_C      = policy.consumption.rate
+        # Combined wedge: 1 − (1−τ_L−τ_payroll)(1−τ_C_eff)
         τ_C_eff = τ_C / (1.0 + τ_C)
-        return float(np.clip(1.0 - (1.0 - τ_L) * (1.0 - τ_C_eff), 0.0, 0.95))
+        return float(np.clip(
+            1.0 - (1.0 - τ_L - τ_payroll) * (1.0 - τ_C_eff), 0.0, 0.95
+        ))
 
     def _effective_capital_wedge(self, policy: TaxPolicy) -> float:
         """

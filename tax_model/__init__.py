@@ -22,6 +22,7 @@ from .calibration import Calibration
 from .policy import (
     TaxPolicy,
     LaborIncomeTax,
+    PayrollTax,
     ConsumptionTax,
     LandValueTax,
     CorporateTax,
@@ -35,6 +36,7 @@ __all__ = [
     "Calibration",
     "TaxPolicy",
     "LaborIncomeTax",
+    "PayrollTax",
     "ConsumptionTax",
     "LandValueTax",
     "CorporateTax",

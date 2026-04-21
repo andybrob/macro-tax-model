@@ -172,6 +172,43 @@ class CapitalGainsTax:
 
 
 @dataclass
+class PayrollTax:
+    """
+    Payroll / social insurance tax (US: FICA).
+
+    employee_rate: employee-side rate (withheld from wages)
+    employer_rate: employer-side rate (implicit labor cost; treated as a wage
+                   tax in incidence since it reduces the employer's willingness
+                   to pay — economic burden falls on workers in the long run)
+    wage_ceiling_median_multiple: cap on taxable wages as a multiple of median
+                                  income.  Above this ceiling, rate drops to
+                                  medicare_rate_above_ceiling.
+                                  US 2024: SS ceiling ≈ $168k ≈ 2.8× median.
+    medicare_rate_above_ceiling: Medicare portion continues above the SS ceiling.
+    """
+    employee_rate: float = 0.0
+    employer_rate: float = 0.0
+    wage_ceiling_median_multiple: float = 2.8
+    medicare_rate_above_ceiling: float = 0.0
+
+    @property
+    def combined_rate_below_ceiling(self) -> float:
+        return self.employee_rate + self.employer_rate
+
+    def effective_rate_for_income_multiple(self, income_multiple: float) -> float:
+        """Average effective payroll rate at a given income multiple."""
+        if income_multiple <= 0:
+            return 0.0
+        ceiling = self.wage_ceiling_median_multiple
+        if income_multiple <= ceiling:
+            return self.combined_rate_below_ceiling
+        # Above ceiling: SS portion capped, Medicare continues on all wages
+        ss_rate = self.combined_rate_below_ceiling - self.medicare_rate_above_ceiling
+        tax = ss_rate * ceiling + self.medicare_rate_above_ceiling * income_multiple
+        return tax / income_multiple
+
+
+@dataclass
 class TaxPolicy:
     """
     A complete tax policy configuration.
@@ -188,6 +225,7 @@ class TaxPolicy:
     """
     label: str = "unnamed"
     labor_income: LaborIncomeTax = field(default_factory=LaborIncomeTax)
+    payroll: PayrollTax = field(default_factory=PayrollTax)
     consumption: ConsumptionTax = field(default_factory=ConsumptionTax)
     land_value: LandValueTax = field(default_factory=LandValueTax)
     corporate: CorporateTax = field(default_factory=CorporateTax)

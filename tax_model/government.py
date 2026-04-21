@@ -72,6 +72,14 @@ def compute_revenue(
     labor_base = labor_income_total * (1.0 - eti * avg_eff_rate)
     labor_revenue = avg_eff_rate * labor_base / gdp
 
+    # --- Payroll tax (FICA) ---
+    # Payroll taxes apply to wages (not capital income). The ceiling means
+    # effective rate declines above the SS wage base.
+    avg_payroll_rate = _avg_effective_payroll_rate(policy, cal)
+    # Payroll tax base is labor income; smaller ETI applies (less avoidance margin)
+    payroll_base = labor_income_total * (1.0 - eti * 0.5 * avg_payroll_rate)
+    payroll_revenue = avg_payroll_rate * payroll_base / gdp
+
     # --- Consumption tax ---
     # Prebate cost = prebate_fraction * poverty_line_consumption * population
     # poverty_line_consumption = poverty_line_consumption_share * (C/N) * N = poverty_line_share * C
@@ -133,6 +141,7 @@ def compute_revenue(
 
     return RevenueBreakdown(
         labor_income_tax=max(0.0, labor_revenue),
+        payroll_tax=max(0.0, payroll_revenue),
         consumption_tax=max(0.0, cons_revenue),
         land_value_tax=land_revenue,
         corporate_tax=max(0.0, corp_revenue),
@@ -170,13 +179,15 @@ def compute_incidence(
 
     burden: Dict[str, float] = {g: 0.0 for g in GROUPS}
 
-    # --- Labor income tax burden ---
-    # Use GROUP-SPECIFIC effective rates (not the GDP-average), so that
-    # progressive brackets produce progressive incidence.
+    # Representative income multiples per group (multiples of median household income)
     group_income_multiples = {
         "Q1": 0.20, "Q2": 0.55, "Q3": 0.90,
         "Q4": 1.40, "Q5_bottom": 2.80, "Q5_top": 8.00,
     }
+
+    # --- Labor income tax burden ---
+    # Use GROUP-SPECIFIC effective rates (not the GDP-average), so that
+    # progressive brackets produce progressive incidence.
     for g in GROUPS:
         labor_share_g = dist.labor_income_shares[g]
         eff_rate_g = policy.labor_income.effective_rate_for_income_multiple(
@@ -184,6 +195,17 @@ def compute_incidence(
         )
         eti_adj = 1.0 - cal.macro.elasticity_of_taxable_income * eff_rate_g * 0.5
         burden[g] += eff_rate_g * labor_share_g * eti_adj
+
+    # --- Payroll tax burden ---
+    # FICA is regressive above the ceiling (flat below, declining above).
+    # Both employee and employer portions fall on workers in the long run.
+    if policy.payroll.combined_rate_below_ceiling > 0:
+        for g in GROUPS:
+            labor_share_g = dist.labor_income_shares[g]
+            payroll_rate_g = policy.payroll.effective_rate_for_income_multiple(
+                group_income_multiples[g]
+            )
+            burden[g] += payroll_rate_g * labor_share_g
 
     # --- Consumption tax burden ---
     if policy.consumption.rate > 0:
@@ -302,6 +324,25 @@ def _avg_effective_labor_rate(policy: TaxPolicy, cal: Calibration) -> float:
     total_rate = 0.0
     for g in GROUPS:
         eff_rate = policy.labor_income.effective_rate_for_income_multiple(
+            group_income_multiples[g]
+        )
+        total_rate += eff_rate * dist.labor_income_shares[g]
+    return total_rate
+
+
+def _avg_effective_payroll_rate(policy: TaxPolicy, cal: Calibration) -> float:
+    """
+    GDP-weighted average effective payroll (FICA) tax rate across income groups.
+    Accounts for the wage ceiling — regressive above the SS wage base.
+    """
+    dist = cal.income_distribution
+    group_income_multiples = {
+        "Q1": 0.20, "Q2": 0.55, "Q3": 0.90,
+        "Q4": 1.40, "Q5_bottom": 2.80, "Q5_top": 8.00,
+    }
+    total_rate = 0.0
+    for g in GROUPS:
+        eff_rate = policy.payroll.effective_rate_for_income_multiple(
             group_income_multiples[g]
         )
         total_rate += eff_rate * dist.labor_income_shares[g]
