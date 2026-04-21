@@ -80,6 +80,10 @@ def current_law() -> TaxPolicy:
     """
     Approximate current US law (federal + state/local, 2024).
     All-in effective rates calibrated to ~30% GDP total revenue.
+
+    Estate tax note: 40% top rate, ~$13.6M exemption (≈170× median income),
+    ~30% effective collection rate after trusts/GRATs/valuation discounts.
+    Raises ~0.1% GDP — small but concentrated on Q5_top.
     """
     return TaxPolicy(
         label="Current Law",
@@ -91,6 +95,7 @@ def current_law() -> TaxPolicy:
         corporate=_CURRENT_LAW_CORPORATE,
         capital_gains=_CURRENT_LAW_CG,
         consumption=ConsumptionTax(rate=0.02),  # excise + misc consumption taxes
+        estate=EstateTax(rate=0.40, exemption_median_multiple=170.0, enforcement_fraction=0.30),
     )
 
 

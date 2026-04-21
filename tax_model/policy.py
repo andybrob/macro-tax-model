@@ -217,27 +217,76 @@ class PayrollTax:
                                   medicare_rate_above_ceiling.
                                   US 2024: SS ceiling ≈ $168k ≈ 2.8× median.
     medicare_rate_above_ceiling: Medicare portion continues above the SS ceiling.
+    ss_donut_top_multiple: if > wage_ceiling, SS tax resumes above this multiple
+                           of median income, creating a "donut hole" (no SS between
+                           ceiling and donut_top). Models proposals to extend SS
+                           solvency by taxing very high earners (e.g. $400k+).
+                           0.0 = disabled (standard current law structure).
+    benefit_cap_median_multiple: if > 0, SS retirement benefits are capped for
+                                 earners above this multiple of median income
+                                 (means-testing). Above the cap, SS contributions
+                                 are a net tax (no insurance value). This increases
+                                 the effective labor wedge for high earners who
+                                 receive no marginal benefit. 0.0 = disabled.
     """
     employee_rate: float = 0.0
     employer_rate: float = 0.0
     wage_ceiling_median_multiple: float = 2.8
     medicare_rate_above_ceiling: float = 0.0
+    ss_donut_top_multiple: float = 0.0       # 0 = disabled; >ceiling = donut hole active
+    benefit_cap_median_multiple: float = 0.0  # 0 = disabled; >0 = benefit cap active
 
     @property
     def combined_rate_below_ceiling(self) -> float:
         return self.employee_rate + self.employer_rate
 
     def effective_rate_for_income_multiple(self, income_multiple: float) -> float:
-        """Average effective payroll rate at a given income multiple."""
+        """
+        Average effective payroll rate at a given income multiple of median income.
+
+        Handles three regimes:
+          Standard (donut disabled): below ceiling = full rate; above = Medicare only.
+          Donut hole (donut_top > ceiling): SS pauses between ceiling and donut_top,
+            then resumes above donut_top (taxing very high earners on the excess).
+          Benefit cap: if income is above benefit_cap, the SS contribution yields
+            no marginal retirement benefit — modeled as an additional 50% wedge on
+            the SS portion above the cap (conservative; empirical range 30–70%).
+        """
         if income_multiple <= 0:
             return 0.0
+
         ceiling = self.wage_ceiling_median_multiple
-        if income_multiple <= ceiling:
-            return self.combined_rate_below_ceiling
-        # Above ceiling: SS portion capped, Medicare continues on all wages
         ss_rate = self.combined_rate_below_ceiling - self.medicare_rate_above_ceiling
-        tax = ss_rate * ceiling + self.medicare_rate_above_ceiling * income_multiple
-        return tax / income_multiple
+        medicare = self.medicare_rate_above_ceiling
+        donut_top = self.ss_donut_top_multiple
+        donut_active = donut_top > ceiling + 1e-9
+
+        if income_multiple <= ceiling:
+            # Below SS wage ceiling: full combined rate
+            effective = self.combined_rate_below_ceiling
+        elif donut_active and income_multiple <= donut_top:
+            # In the donut hole: SS capped at ceiling, only Medicare continues
+            tax = ss_rate * ceiling + medicare * income_multiple
+            effective = tax / income_multiple
+        elif donut_active and income_multiple > donut_top:
+            # Above donut top: SS resumes on income above donut_top + Medicare on all
+            # (SS cap applies only up to ceiling; the high-end SS is on the *excess*)
+            tax = ss_rate * ceiling + medicare * income_multiple + ss_rate * (income_multiple - donut_top)
+            effective = tax / income_multiple
+        else:
+            # Standard law above ceiling: SS capped, Medicare continues
+            tax = ss_rate * ceiling + medicare * income_multiple
+            effective = tax / income_multiple
+
+        # Benefit cap adjustment: SS above the cap is a net tax (no insurance value).
+        # We add 50% of the SS rate on the capped portion as an additional wedge.
+        if self.benefit_cap_median_multiple > 0 and income_multiple > self.benefit_cap_median_multiple:
+            cap_m = self.benefit_cap_median_multiple
+            # SS paid above the cap (on the excess, up to ceiling) with 50% benefit-tax wedge
+            ss_above_cap = ss_rate * max(0.0, min(ceiling, income_multiple) - cap_m)
+            effective += 0.50 * ss_above_cap / income_multiple
+
+        return float(effective)
 
 
 @dataclass

@@ -62,6 +62,20 @@ economy = load_economy()
 
 
 # ---------------------------------------------------------------------------
+# Welfare helpers
+# ---------------------------------------------------------------------------
+
+# Income-share weights for Q1–Q4 (approx. CBO data; bottom 80% of income)
+_BOTTOM80_WEIGHTS = {"Q1": 0.04, "Q2": 0.09, "Q3": 0.15, "Q4": 0.23}
+_BOTTOM80_TOTAL_W = sum(_BOTTOM80_WEIGHTS.values())
+
+def _bottom80_burden(result) -> float:
+    """Income-weighted average effective tax burden for Q1–Q4 (bottom 80%)."""
+    return sum(_BOTTOM80_WEIGHTS[g] * result.incidence[g]
+               for g in _BOTTOM80_WEIGHTS) / _BOTTOM80_TOTAL_W
+
+
+# ---------------------------------------------------------------------------
 # Revenue-neutral helper
 # ---------------------------------------------------------------------------
 
@@ -76,8 +90,6 @@ def _make_revenue_neutral(
     Returns the adjusted policy (a deep copy — does not mutate the input).
     """
     from scipy.optimize import brentq
-
-    p = copy.deepcopy(reform_policy)
 
     def revenue_gap(rate: float) -> float:
         p2 = copy.deepcopy(reform_policy)
@@ -96,7 +108,7 @@ def _make_revenue_neutral(
         gap_lo = revenue_gap(lo)
         gap_hi = revenue_gap(hi)
         if gap_lo * gap_hi > 0:
-            return reform_policy  # can't bracket — return as-is
+            return reform_policy
         adjusted_rate = brentq(revenue_gap, lo, hi, xtol=1e-4, maxiter=30)
     except Exception:
         return reform_policy
@@ -131,9 +143,11 @@ def _policy_to_slider_state(policy: TaxPolicy) -> dict:
         "l1": _rate(0.0), "l2": _rate(0.5), "l3": _rate(1.5),
         "l4": _rate(3.0), "l5": _rate(7.0),
         "std": policy.labor_income.standard_deduction_median_multiple,
-        "pr_emp":  policy.payroll.employee_rate,
-        "pr_er":   policy.payroll.employer_rate,
-        "pr_ceil": policy.payroll.wage_ceiling_median_multiple,
+        "pr_emp":   policy.payroll.employee_rate,
+        "pr_er":    policy.payroll.employer_rate,
+        "pr_ceil":  policy.payroll.wage_ceiling_median_multiple,
+        "pr_donut": policy.payroll.ss_donut_top_multiple,
+        "pr_bcap":  policy.payroll.benefit_cap_median_multiple,
         "cons_rate": policy.consumption.rate,
         "cons_ess":  policy.consumption.essentials_rate if policy.consumption.essentials_rate is not None else policy.consumption.rate,
         "cons_lux":  policy.consumption.luxury_rate if policy.consumption.luxury_rate is not None else policy.consumption.rate,
@@ -162,6 +176,23 @@ def _load_preset_to_state(key: str, preset_name: str):
     vals = _policy_to_slider_state(policy)
     for field, val in vals.items():
         st.session_state[f"{key}_{field}"] = val
+
+
+def _apply_policy_to_state(key: str, policy: TaxPolicy):
+    """Load an arbitrary TaxPolicy into session_state keys for sliders."""
+    vals = _policy_to_slider_state(policy)
+    for field, val in vals.items():
+        st.session_state[f"{key}_{field}"] = val
+
+
+# ---------------------------------------------------------------------------
+# Auto-initialize slider state from presets on first load
+# ---------------------------------------------------------------------------
+
+if "initialized" not in st.session_state:
+    _load_preset_to_state("b", "Current Law")
+    _load_preset_to_state("r", "LVT Swap")
+    st.session_state["initialized"] = True
 
 
 # ---------------------------------------------------------------------------
@@ -289,11 +320,8 @@ active_economy = _get_economy_with_mobility(capital_mobility_pct / 100.0)
 
 
 # ---------------------------------------------------------------------------
-# Two columns: Baseline | Reform
+# Policy controls
 # ---------------------------------------------------------------------------
-
-col_base, col_reform = st.columns(2)
-
 
 def _policy_controls(key: str, default_preset: str) -> TaxPolicy:
     """
@@ -327,10 +355,46 @@ def _policy_controls(key: str, default_preset: str) -> TaxPolicy:
 
     with tab_payroll:
         st.caption("FICA (Social Security + Medicare). Both portions fall on workers in the long run.")
-        pr_emp  = st.slider("Employee rate",  0.0, 0.15, sv("pr_emp",  0.0765), 0.005, format="%.3f", key=f"{key}_pr_emp")
-        pr_er   = st.slider("Employer rate",  0.0, 0.15, sv("pr_er",   0.0765), 0.005, format="%.3f", key=f"{key}_pr_er")
+        pr_emp  = st.slider("Employee rate",  0.0, 0.15, sv("pr_emp",  0.045), 0.005, format="%.3f", key=f"{key}_pr_emp")
+        pr_er   = st.slider("Employer rate",  0.0, 0.15, sv("pr_er",   0.045), 0.005, format="%.3f", key=f"{key}_pr_er")
         pr_ceil = st.slider("SS wage ceiling (× median)", 0.5, 5.0, sv("pr_ceil", 2.8), 0.1, key=f"{key}_pr_ceil")
-        st.caption(f"Combined rate: {(pr_emp+pr_er)*100:.1f}%  |  Medicare (2.9%) continues above ceiling")
+        st.caption(f"Combined rate: {(pr_emp+pr_er)*100:.1f}%  |  Medicare (1.5% effective) continues above ceiling")
+
+        st.divider()
+        use_donut = st.checkbox("SS Donut Hole (high earner SS gap)", key=f"{key}_use_donut",
+                                help=(
+                                    "Creates a gap where SS is not collected between the wage ceiling "
+                                    "and a higher threshold, then resumes above that threshold. "
+                                    "Proposal to extend SS solvency by taxing very high earners."
+                                ))
+        if use_donut:
+            pr_donut = st.slider(
+                "SS resumes above (× median)", float(pr_ceil) + 0.5, 15.0,
+                float(max(sv("pr_donut", 5.0), pr_ceil + 0.5)), 0.5, key=f"{key}_pr_donut",
+                help=f"SS gap: no SS from {pr_ceil:.1f}× to here. SS then resumes on income above this.",
+            )
+            st.caption(
+                f"Donut: SS pauses from {pr_ceil:.1f}× (≈${pr_ceil*80:.0f}k) "
+                f"to {pr_donut:.1f}× (≈${pr_donut*80:.0f}k) median income."
+            )
+        else:
+            pr_donut = 0.0
+
+        use_bcap = st.checkbox("SS Benefit Cap (means-testing)", key=f"{key}_use_bcap",
+                               help=(
+                                   "Caps SS retirement benefits for high earners. Above the threshold, "
+                                   "SS contributions become a net tax (no additional benefit). "
+                                   "Models partial means-testing of Social Security."
+                               ))
+        if use_bcap:
+            pr_bcap = st.slider(
+                "Benefit cap (× median income)", 2.0, 10.0,
+                float(max(sv("pr_bcap", 4.0), 2.0)), 0.5, key=f"{key}_pr_bcap",
+                help="High earners above this level receive no additional SS benefit.",
+            )
+            st.caption(f"Benefit cap at {pr_bcap:.1f}× (≈${pr_bcap*80:.0f}k) median — SS above cap is net tax.")
+        else:
+            pr_bcap = 0.0
 
     with tab_cons:
         cons_rate = st.slider("Standard rate", 0.0, 0.35, sv("cons_rate", 0.02), 0.01, key=f"{key}_cons_rate")
@@ -364,30 +428,55 @@ def _policy_controls(key: str, default_preset: str) -> TaxPolicy:
         lab_off  = st.slider("Labor tax offset fraction",  0.0, max_lab, min(sv("lab_off", 0.0), max_lab), 0.05, key=f"{key}_lab_off")
 
     with tab_cg:
-        cg_rate = st.slider("Capital gains rate",     0.0, 0.50, sv("cg_rate", 0.238), 0.01, key=f"{key}_cg_rate")
-        cg_idx  = st.checkbox("Inflation-indexed",              sv("cg_idx",  False),        key=f"{key}_cg_idx")
-        lock_in = st.slider("Lock-in discount",      0.0, 0.60, sv("lock_in", 0.30),  0.05, key=f"{key}_lock_in",
-                            help="Effective rate = statutory × (1 − lock_in).")
-        cg_sub  = st.slider("Stepped-up basis removal", 0.0, 1.0, sv("cg_sub", 0.0), 0.05, key=f"{key}_cg_sub",
-                            help=(
-                                "0 = current law (heirs inherit FMV basis; gains permanently exempt).\n"
-                                "1 = full removal (heirs inherit original cost basis; reduces lock-in)."
-                            ))
+        st.caption(
+            "Capital gains tax on investment returns. Key policy levers: statutory rate, "
+            "whether gains are taxed like ordinary income, and stepped-up basis at death."
+        )
+        cg_ordinary = st.checkbox(
+            "Tax at ordinary income rates (same as wages)",
+            value=sv("cg_ordinary", False),
+            key=f"{key}_cg_ordinary",
+            help="Eliminates the preferential capital gains rate — gains taxed at the same rate as labor income.",
+        )
+        if cg_ordinary:
+            cg_rate = l5  # top ordinary rate from Income Tax tab
+            st.caption(f"CG rate set to top ordinary rate: **{cg_rate*100:.1f}%**")
+        else:
+            cg_rate = st.slider("Capital gains rate", 0.0, 0.50, sv("cg_rate", 0.238), 0.01, key=f"{key}_cg_rate")
+
+        cg_idx  = st.checkbox("Inflation-indexed (only real gains taxed)",
+                              value=sv("cg_idx", False), key=f"{key}_cg_idx")
+
+        remove_stepup = st.checkbox(
+            "Remove stepped-up basis (tax gains at death)",
+            value=sv("remove_stepup", False),
+            key=f"{key}_remove_stepup",
+            help=(
+                "Current law: heirs inherit assets at fair market value — unrealized gains "
+                "are permanently exempt. Removing step-up: heirs inherit original cost basis, "
+                "so gains that accrued during the decedent's life become taxable."
+            ),
+        )
+        cg_sub = 1.0 if remove_stepup else 0.0
+
+        lock_in = st.slider("Lock-in discount", 0.0, 0.60, sv("lock_in", 0.30), 0.05, key=f"{key}_lock_in",
+                            help="Effective rate = statutory × (1 − lock_in). Realization-based deferral reduces effective rate.")
         eff = cg_rate * (1.0 - lock_in * (1.0 - 0.60 * cg_sub))
         st.caption(f"Effective rate after lock-in & step-up adjustment: **{eff*100:.1f}%**")
 
     with tab_estate:
         st.caption(
             "Estate tax on large inheritances. Falls almost entirely on Q5_top (top 1%). "
-            "Revenue ~0.1% GDP at current rates; could reach 0.5%+ with higher rates + enforcement."
+            "Current law: 40% rate, ~$13.6M exemption (~170× median), ~30% effective collection rate. "
+            "Revenue ~0.1% GDP; could reach 0.5%+ with higher rates + enforcement."
         )
-        est_rate = st.slider("Top marginal rate",             0.0, 0.80, sv("est_rate", 0.0),   0.05, key=f"{key}_est_rate")
+        est_rate = st.slider("Top marginal rate",             0.0, 0.80, sv("est_rate", 0.40),   0.05, key=f"{key}_est_rate")
         est_exem = st.slider("Exemption (× median income)",  10.0, 300.0, sv("est_exem", 170.0), 10.0, key=f"{key}_est_exem",
                              help="US 2024 exemption ≈ $13.6M ≈ 170× median income.")
         est_enf  = st.slider("Enforcement fraction",          0.10, 0.90, sv("est_enf",  0.30), 0.05, key=f"{key}_est_enf",
                              help="Current law ~30% (trusts, GRATs, valuation discounts). Better enforcement → higher fraction.")
         if est_rate > 0:
-            approx_rev = est_rate * est_enf * 0.70 * 0.40 * 2.5 * 0.35  # rough order-of-magnitude
+            approx_rev = est_rate * est_enf * 0.70 * 0.40 * 2.5 * 0.35
             st.caption(f"Approximate revenue: ~{approx_rev*100:.2f}% GDP")
 
     label = st.text_input(
@@ -406,7 +495,9 @@ def _policy_controls(key: str, default_preset: str) -> TaxPolicy:
             employee_rate=pr_emp,
             employer_rate=pr_er,
             wage_ceiling_median_multiple=pr_ceil,
-            medicare_rate_above_ceiling=0.029,
+            medicare_rate_above_ceiling=0.015,
+            ss_donut_top_multiple=pr_donut,
+            benefit_cap_median_multiple=pr_bcap,
         ),
         consumption=ConsumptionTax(
             rate=cons_rate,
@@ -440,13 +531,20 @@ def _policy_controls(key: str, default_preset: str) -> TaxPolicy:
     )
 
 
-with col_base:
-    st.header("Baseline")
+# ---------------------------------------------------------------------------
+# Layout: Baseline (tucked) + Reform (full width)
+# ---------------------------------------------------------------------------
+
+with st.expander("⚙️ Baseline — Current Law (click to customize)", expanded=False):
+    st.caption(
+        "Defaults to Current Law (2024 federal + state/local). "
+        "Most users compare a reform against this baseline. "
+        "Customize only if you want to compare two reforms against each other."
+    )
     baseline_policy = _policy_controls("b", "Current Law")
 
-with col_reform:
-    st.header("Reform")
-    reform_policy = _policy_controls("r", "LVT Swap")
+st.subheader("Reform Policy")
+reform_policy = _policy_controls("r", "LVT Swap")
 
 
 # ---------------------------------------------------------------------------
@@ -454,11 +552,10 @@ with col_reform:
 # ---------------------------------------------------------------------------
 
 st.divider()
-st.header("Results")
 
 with st.spinner("Solving equilibrium..."):
     try:
-        # Always solve baseline first (revenue-neutral needs baseline revenue)
+        # Solve baseline
         baseline_result = active_economy.solve(baseline_policy)
 
         # Apply revenue-neutral adjustment to reform if requested
@@ -469,11 +566,6 @@ with st.spinner("Solving equilibrium..."):
                 economy=active_economy,
                 instrument=rn_instrument,
             )
-            if reform_scenario:
-                st.info(
-                    f"Revenue-neutral: auto-adjusted **{rn_instrument}** to match baseline revenue "
-                    f"({baseline_result.revenue.total*100:.1f}% GDP)."
-                )
 
         reform_result = active_economy.solve(reform_policy, scenario=reform_scenario)
         comparison    = PolicyComparison(baseline=baseline_result, reform=reform_result)
@@ -489,32 +581,86 @@ with st.spinner("Solving equilibrium..."):
                 parts.append(f"**{lc.name}**: +{(lc.high_skill_labor_multiplier-1)*100:.0f}% high-skill labor, +{lc.tfp_spillover*100:.1f}% TFP spillover")
             st.info("Structural reforms applied to reform: " + " · ".join(parts))
 
-        # --- Key metrics ---
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("GDP change",       f"{comparison.gdp_change_pct:+.2f}%")
-        m2.metric("Capital change",   f"{comparison.capital_change_pct:+.2f}%")
-        m3.metric("Labor change",     f"{comparison.labor_change_pct:+.2f}%")
-        m4.metric("Wage change",      f"{comparison.wage_change_pct:+.2f}%")
-        m5.metric("Budget balance Δ", f"{comparison.budget_balance_change:+.2f}pp GDP",
-                  help="Change in budget balance (pp of GDP). Positive = reform improves fiscal position.")
+        if revenue_neutral:
+            st.info(
+                f"Revenue-neutral: auto-adjusted **{rn_instrument}** to match baseline revenue "
+                f"({baseline_result.revenue.total*100:.1f}% GDP)."
+            )
 
-        # --- Revenue info ---
-        rev_base = baseline_result.revenue.total * 100
-        rev_ref  = reform_result.revenue.total * 100
-        col_a, col_b = st.columns(2)
-        col_a.caption(f"Baseline revenue: **{rev_base:.1f}% GDP**  |  budget balance: {baseline_result.budget_balance*100:+.1f}%")
-        col_b.caption(f"Reform revenue:   **{rev_ref:.1f}% GDP**  |  budget balance: {reform_result.budget_balance*100:+.1f}%")
+        # -----------------------------------------------------------------------
+        # KPI infographic — 3 headline metrics vs baseline
+        # -----------------------------------------------------------------------
+        gdp_delta      = comparison.gdp_change_pct
+        deficit_reform = reform_result.budget_balance * 100
+        deficit_base   = baseline_result.budget_balance * 100
+        deficit_delta  = deficit_reform - deficit_base
+
+        burden_base   = _bottom80_burden(baseline_result) * 100
+        burden_reform = _bottom80_burden(reform_result) * 100
+        burden_delta  = burden_reform - burden_base
+
+        st.markdown("### Reform vs. Baseline — Key Outcomes")
+        kpi1, kpi2, kpi3 = st.columns(3)
+
+        kpi1.metric(
+            label="📈 Long-Run GDP",
+            value=f"{gdp_delta:+.2f}%",
+            delta=f"Baseline GDP = 100",
+            help=(
+                "Percentage change in steady-state GDP relative to baseline. "
+                "Reflects long-run capital accumulation, labor supply, and TFP effects."
+            ),
+        )
+
+        kpi2.metric(
+            label="💰 Budget Balance (Reform)",
+            value=f"{deficit_reform:+.1f}% GDP",
+            delta=f"{deficit_delta:+.1f}pp vs baseline ({deficit_base:+.1f}%)",
+            delta_color="normal",
+            help=(
+                "Government budget balance as % of GDP under the reform. "
+                "Positive = surplus. Negative = deficit. "
+                "Delta shows change from baseline."
+            ),
+        )
+
+        kpi3.metric(
+            label="🏘️ Bottom 80% Tax Burden",
+            value=f"{burden_reform:.1f}% of income",
+            delta=f"{burden_delta:+.2f}pp vs baseline ({burden_base:.1f}%)",
+            delta_color="inverse",
+            help=(
+                "Income-weighted average effective tax burden for Q1–Q4 (bottom 80% of earners). "
+                "Lower = better for households. Delta shows change from baseline. "
+                "Accounts for all taxes: income, payroll, consumption, carbon dividends, estate."
+            ),
+        )
+
+        # Secondary metrics row
+        with st.expander("More metrics", expanded=False):
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Capital Stock Δ", f"{comparison.capital_change_pct:+.2f}%")
+            m2.metric("Labor Supply Δ",  f"{comparison.labor_change_pct:+.2f}%")
+            m3.metric("Wage Δ",          f"{comparison.wage_change_pct:+.2f}%")
+            rev_delta = (reform_result.revenue.total - baseline_result.revenue.total) * 100
+            m4.metric("Revenue Δ",       f"{rev_delta:+.1f}pp GDP")
+
+            st.caption(
+                f"Baseline: GDP=1.00 | Revenue={baseline_result.revenue.total*100:.1f}% GDP | "
+                f"Balance={deficit_base:+.1f}% | Bottom-80% burden={burden_base:.1f}%"
+            )
 
         # --- CSV export ---
         from tax_model.calibration import GROUPS
         import pandas as pd
         rows = [
-            {"Category": "Macro", "Item": "GDP (normalized)",        "Baseline": round(baseline_result.gdp, 4),            "Reform": round(reform_result.gdp, 4)},
-            {"Category": "Macro", "Item": "Capital (normalized)",     "Baseline": round(baseline_result.capital_stock, 4),  "Reform": round(reform_result.capital_stock, 4)},
-            {"Category": "Macro", "Item": "Labor (normalized)",       "Baseline": round(baseline_result.labor_supply, 4),   "Reform": round(reform_result.labor_supply, 4)},
-            {"Category": "Macro", "Item": "Wage (normalized)",        "Baseline": round(baseline_result.wage, 4),           "Reform": round(reform_result.wage, 4)},
-            {"Category": "Macro", "Item": "Revenue (% GDP)",          "Baseline": round(rev_base, 2),                       "Reform": round(rev_ref, 2)},
-            {"Category": "Macro", "Item": "Budget balance (% GDP)",   "Baseline": round(baseline_result.budget_balance*100, 2), "Reform": round(reform_result.budget_balance*100, 2)},
+            {"Category": "Macro", "Item": "GDP (normalized)",         "Baseline": round(baseline_result.gdp, 4),                "Reform": round(reform_result.gdp, 4)},
+            {"Category": "Macro", "Item": "Capital (normalized)",      "Baseline": round(baseline_result.capital_stock, 4),      "Reform": round(reform_result.capital_stock, 4)},
+            {"Category": "Macro", "Item": "Labor (normalized)",        "Baseline": round(baseline_result.labor_supply, 4),       "Reform": round(reform_result.labor_supply, 4)},
+            {"Category": "Macro", "Item": "Wage (normalized)",         "Baseline": round(baseline_result.wage, 4),               "Reform": round(reform_result.wage, 4)},
+            {"Category": "Macro", "Item": "Revenue (% GDP)",           "Baseline": round(baseline_result.revenue.total*100, 2),  "Reform": round(reform_result.revenue.total*100, 2)},
+            {"Category": "Macro", "Item": "Budget balance (% GDP)",    "Baseline": round(deficit_base, 2),                       "Reform": round(deficit_reform, 2)},
+            {"Category": "Macro", "Item": "Bottom 80% burden (%)",     "Baseline": round(burden_base, 2),                        "Reform": round(burden_reform, 2)},
         ]
         for g in GROUPS:
             rows.append({
@@ -553,15 +699,7 @@ with st.spinner("Solving equilibrium..."):
             st.pyplot(fig); plt.close(fig)
 
         with chart_tabs[4]:
-            from tax_model.government import compute_instrument_incidence
-            from tax_model.government import Allocation, compute_revenue as _cr
-            # Recompute allocations for per-instrument breakdown
-            # (Use the already-solved results directly — reconstruct alloc from ModelResult)
-            # Since alloc isn't stored on ModelResult, call the breakdown using revenue + policy
-            # We approximate alloc fields from ModelResult scalars for the breakdown
-            from tax_model.government import _GROUP_INCOME_MULTIPLES
-            from dataclasses import dataclass
-
+            from tax_model.government import compute_instrument_incidence, Allocation
             def _make_alloc_from_result(res, cal):
                 return Allocation(
                     gdp=res.gdp,
@@ -574,14 +712,11 @@ with st.spinner("Solving equilibrium..."):
                     land_rent=cal.land.land_rent_gdp_ratio * res.gdp,
                     externality_quantity=cal.externality.carbon_intensity_per_gdp * res.gdp,
                 )
-
             cal = active_economy.cal
             base_alloc   = _make_alloc_from_result(baseline_result, cal)
             reform_alloc = _make_alloc_from_result(reform_result, cal)
-
             base_breakdown   = compute_instrument_incidence(base_alloc,   baseline_policy, baseline_result.revenue, cal)
             reform_breakdown = compute_instrument_incidence(reform_alloc,  reform_policy,   reform_result.revenue,  cal)
-
             fig = plot_instrument_incidence(
                 base_breakdown, reform_breakdown,
                 baseline_label=baseline_result.policy_label,
@@ -656,6 +791,131 @@ with st.spinner("Solving equilibrium..."):
                     f"median: {bud_ci['mean']:+.2f} pp GDP"
                 )
 
+        # -----------------------------------------------------------------------
+        # Policy Optimizer
+        # -----------------------------------------------------------------------
+        with st.expander("🔧 Policy Optimizer — find the best reform given constraints"):
+            st.markdown(
+                "**Maximize long-run GDP** by adjusting tax rates, subject to constraints "
+                "on the budget deficit and bottom-80% welfare. The optimizer searches over "
+                "the top income bracket rate, consumption rate, and corporate rate."
+            )
+            st.caption(
+                "Starting point: your current reform policy. Constraints tighten the feasible set. "
+                "Click 'Run Optimizer' — takes ~5 seconds."
+            )
+
+            opt_c1, opt_c2 = st.columns(2)
+            with opt_c1:
+                opt_max_deficit = st.slider(
+                    "Max allowed budget deficit (% GDP)",
+                    min_value=-10.0, max_value=0.0,
+                    value=float(round(min(deficit_base, -0.0), 1)),
+                    step=0.5, key="opt_deficit",
+                    help=(
+                        "Budget balance must be ≥ this value. "
+                        "Set to baseline deficit to require fiscal neutrality."
+                    ),
+                )
+            with opt_c2:
+                opt_max_burden_increase = st.slider(
+                    "Max bottom-80% burden increase (pp)",
+                    min_value=0.0, max_value=5.0, value=0.0, step=0.5,
+                    key="opt_welfare",
+                    help=(
+                        "Bottom 80% income-weighted effective burden cannot rise by more "
+                        "than this many percentage points above baseline. 0 = no worse off."
+                    ),
+                )
+
+            if st.button("🚀 Run Optimizer", key="run_optimizer"):
+                from scipy.optimize import minimize
+
+                # Current reform brackets as starting point
+                _b = reform_policy.labor_income.brackets
+                x0_top   = _b[-1][1] if _b else 0.37
+                x0_cons  = reform_policy.consumption.rate
+                x0_corp  = reform_policy.corporate.rate
+                x0 = np.array([x0_top, x0_cons, x0_corp])
+
+                _opt_cache: dict = {}
+
+                def _opt_solve(x):
+                    xkey = tuple(np.round(x, 4))
+                    if xkey in _opt_cache:
+                        return _opt_cache[xkey]
+                    p = copy.deepcopy(reform_policy)
+                    brackets = list(p.labor_income.brackets)
+                    brackets[-1] = (brackets[-1][0], float(np.clip(x[0], 0.0, 0.65)))
+                    p.labor_income.brackets = brackets
+                    p.consumption.rate = float(np.clip(x[1], 0.0, 0.35))
+                    p.corporate.rate   = float(np.clip(x[2], 0.0, 0.50))
+                    try:
+                        res = active_economy.solve(p, scenario=reform_scenario)
+                        _opt_cache[xkey] = res
+                        return res
+                    except Exception:
+                        return None
+
+                def obj(x):
+                    res = _opt_solve(x)
+                    return -res.gdp if res is not None else 1e6
+
+                def con_budget(x):
+                    res = _opt_solve(x)
+                    if res is None: return -1e6
+                    return res.budget_balance - (opt_max_deficit / 100.0)
+
+                def con_welfare(x):
+                    res = _opt_solve(x)
+                    if res is None: return -1e6
+                    reform_burden = _bottom80_burden(res)
+                    # burden must not exceed baseline + allowed increase
+                    return (burden_base / 100.0 + opt_max_burden_increase / 100.0) - reform_burden
+
+                with st.spinner("Running optimizer (SLSQP, ~5 sec)..."):
+                    opt_result = minimize(
+                        obj, x0,
+                        method="SLSQP",
+                        bounds=[(0.20, 0.65), (0.0, 0.35), (0.10, 0.50)],
+                        constraints=[
+                            {"type": "ineq", "fun": con_budget},
+                            {"type": "ineq", "fun": con_welfare},
+                        ],
+                        options={"maxiter": 100, "ftol": 1e-5},
+                    )
+
+                if opt_result.success or opt_result.fun < -0.99:
+                    opt_policy = copy.deepcopy(reform_policy)
+                    brackets = list(opt_policy.labor_income.brackets)
+                    brackets[-1] = (brackets[-1][0], float(np.clip(opt_result.x[0], 0.0, 0.65)))
+                    opt_policy.labor_income.brackets = brackets
+                    opt_policy.consumption.rate = float(np.clip(opt_result.x[1], 0.0, 0.35))
+                    opt_policy.corporate.rate   = float(np.clip(opt_result.x[2], 0.0, 0.50))
+                    opt_res = active_economy.solve(opt_policy, scenario=reform_scenario)
+
+                    st.success("Optimizer converged!")
+                    oc1, oc2, oc3 = st.columns(3)
+                    oc1.metric("Optimal GDP", f"{opt_res.gdp*100:.2f}", delta=f"{(opt_res.gdp - reform_result.gdp)*100:+.2f}pp vs your reform")
+                    oc2.metric("Budget Balance", f"{opt_res.budget_balance*100:+.1f}% GDP")
+                    oc3.metric("Bottom-80% Burden", f"{_bottom80_burden(opt_res)*100:.1f}%")
+
+                    st.markdown(
+                        f"**What changed from your reform:**  \n"
+                        f"- Top income bracket: {x0_top*100:.1f}% → **{opt_result.x[0]*100:.1f}%**  \n"
+                        f"- Consumption rate: {x0_cons*100:.1f}% → **{opt_result.x[1]*100:.1f}%**  \n"
+                        f"- Corporate rate: {x0_corp*100:.1f}% → **{opt_result.x[2]*100:.1f}%**"
+                    )
+
+                    if st.button("↩ Apply optimal policy to Reform", key="apply_optimal"):
+                        _apply_policy_to_state("r", opt_policy)
+                        st.rerun()
+                else:
+                    st.warning(
+                        "Optimizer could not find a feasible solution within the given constraints. "
+                        "Try relaxing the budget deficit or welfare constraints."
+                    )
+
     except Exception as e:
         import traceback
         st.error(f"Solver error: {e}")
@@ -686,6 +946,14 @@ bear it via lower wages. Most economists place the US somewhere in between.
 **New in v2**: Estate tax, stepped-up basis removal, tiered VAT (France-style),
 revenue-neutral toggle, structural reform cards (Pre-K, MOOCs, H1B), per-instrument
 incidence breakdown, growth–equity frontier, transition debt path, Monte Carlo CI.
+
+**New in v3**: Headline KPI infographic, baseline expander (tucked away), binary CG
+checkboxes (ordinary income / remove step-up), SS donut hole + benefit cap controls,
+policy optimizer (maximize GDP subject to deficit and bottom-80% welfare constraints).
+
+**Auto-calibration**: Live recalibration from BLS/BEA data would require ongoing API
+integrations. The calibration file (`calibration/us_2024.yaml`) is human-readable —
+power users can fork the repo and update parameters directly from FRED or CBO data.
 
 **Presets** represent well-known tax reform proposals. This is an 80/20 model —
 directionally correct, not CBO-grade.
