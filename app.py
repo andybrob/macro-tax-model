@@ -191,7 +191,7 @@ def _apply_policy_to_state(key: str, policy: TaxPolicy):
 
 if "initialized" not in st.session_state:
     _load_preset_to_state("b", "Current Law")
-    _load_preset_to_state("r", "LVT Swap")
+    _load_preset_to_state("r", "Current Law")
     st.session_state["initialized"] = True
 
 
@@ -544,7 +544,7 @@ with st.expander("⚙️ Baseline — Current Law (click to customize)", expande
     baseline_policy = _policy_controls("b", "Current Law")
 
 st.subheader("Reform Policy")
-reform_policy = _policy_controls("r", "LVT Swap")
+reform_policy = _policy_controls("r", "Current Law")
 
 
 # ---------------------------------------------------------------------------
