@@ -48,7 +48,7 @@ Open economy / capital mobility
 """
 
 from __future__ import annotations
-from typing import Tuple
+from typing import Tuple, Optional
 
 import numpy as np
 from scipy.optimize import root
@@ -90,64 +90,83 @@ class Economy:
     # Public API
     # ------------------------------------------------------------------
 
-    def solve(self, policy: TaxPolicy) -> ModelResult:
+    def solve(self, policy: TaxPolicy, scenario=None) -> ModelResult:
         """
-        Find the steady-state equilibrium under `policy` and return a
-        ModelResult.  All quantities normalized so no-tax baseline GDP = 1.0.
+        Find the steady-state equilibrium under `policy` and return a ModelResult.
+        All quantities normalized so no-tax baseline GDP = 1.0.
+
+        scenario : ScenarioBundle or None
+            Optional structural reforms (TFP cards, labor supply cards) applied
+            on top of the tax policy. When provided, the calibration is temporarily
+            modified for this solve only; the stored baseline normalization is unchanged.
         """
-        K, L, r = self._solve_equilibrium(policy)
-        w = self._marginal_product_labor(K, L)
-        Y = self._production(K, L)
+        # Apply scenario card modifications to calibration (deep copy — does not mutate self.cal)
+        if scenario is not None and not scenario.is_empty():
+            effective_cal = scenario.apply_to_calibration(self.cal)
+        else:
+            effective_cal = self.cal
 
-        # Normalize by no-tax baseline
-        K_norm = K / self._baseline_K
-        L_norm = L / self._baseline_L
-        Y_norm = Y / self._baseline_Y
-        w_norm = w / self._baseline_w
-        r_net  = r  # rate, not scaled
+        # Temporarily override self.cal for the duration of this solve so that
+        # all helper methods (_residuals, _production, etc.) pick up the scenario.
+        original_cal = self.cal
+        self.cal = effective_cal
+        try:
+            K, L, r = self._solve_equilibrium(policy)
+            w = self._marginal_product_labor(K, L)
+            Y = self._production(K, L)
 
-        δ = self.cal.production.depreciation_rate
-        I_norm = (δ * K) / self._baseline_Y
-        C_norm = Y_norm - I_norm - self.cal.government.spending_gdp_ratio
+            # Normalize by the ORIGINAL (no-scenario) baseline so GDP comparisons are
+            # always relative to the same reference point.
+            K_norm = K / self._baseline_K
+            L_norm = L / self._baseline_L
+            Y_norm = Y / self._baseline_Y
+            w_norm = w / self._baseline_w
+            r_net  = r
 
-        # Externality quantity scales with economic activity
-        ext_qty = self.cal.externality.carbon_intensity_per_gdp * Y_norm
-        ext_dmg = ext_qty * self.cal.externality.social_cost_carbon
+            δ = effective_cal.production.depreciation_rate
+            I_norm = (δ * K) / self._baseline_Y
+            C_norm = Y_norm - I_norm - effective_cal.government.spending_gdp_ratio
 
-        alloc = Allocation(
-            gdp=Y_norm,
-            capital_stock=K_norm,
-            labor_supply=L_norm,
-            consumption=max(C_norm, 0.01),
-            investment=I_norm,
-            wage=w_norm,
-            return_on_capital=r_net,
-            land_rent=self.cal.land.land_rent_gdp_ratio * Y_norm,
-            externality_quantity=ext_qty,
-        )
+            ext_qty = effective_cal.externality.carbon_intensity_per_gdp * Y_norm
+            ext_dmg = ext_qty * effective_cal.externality.social_cost_carbon
 
-        revenue   = compute_revenue(alloc, policy, self.cal)
-        incidence = compute_incidence(alloc, policy, revenue, self.cal)
+            alloc = Allocation(
+                gdp=Y_norm,
+                capital_stock=K_norm,
+                labor_supply=L_norm,
+                consumption=max(C_norm, 0.01),
+                investment=I_norm,
+                wage=w_norm,
+                return_on_capital=r_net,
+                land_rent=effective_cal.land.land_rent_gdp_ratio * Y_norm,
+                externality_quantity=ext_qty,
+            )
 
-        gov_spending   = self.cal.government.spending_gdp_ratio
-        budget_balance = revenue.total - gov_spending
+            revenue   = compute_revenue(alloc, policy, effective_cal)
+            incidence = compute_incidence(alloc, policy, revenue, effective_cal)
 
-        return ModelResult(
-            policy_label=policy.label,
-            gdp=Y_norm,
-            capital_stock=K_norm,
-            labor_supply=L_norm,
-            consumption=max(C_norm, 0.01),
-            investment=I_norm,
-            wage=w_norm,
-            return_on_capital=r_net,
-            revenue=revenue,
-            government_spending=gov_spending,
-            budget_balance=budget_balance,
-            incidence=incidence,
-            externality_quantity=ext_qty,
-            externality_damage=ext_dmg,
-        )
+            gov_spending   = effective_cal.government.spending_gdp_ratio
+            budget_balance = revenue.total - gov_spending
+
+            return ModelResult(
+                policy_label=policy.label,
+                gdp=Y_norm,
+                capital_stock=K_norm,
+                labor_supply=L_norm,
+                consumption=max(C_norm, 0.01),
+                investment=I_norm,
+                wage=w_norm,
+                return_on_capital=r_net,
+                revenue=revenue,
+                government_spending=gov_spending,
+                budget_balance=budget_balance,
+                incidence=incidence,
+                externality_quantity=ext_qty,
+                externality_damage=ext_dmg,
+            )
+        finally:
+            # Always restore original calibration
+            self.cal = original_cal
 
     # ------------------------------------------------------------------
     # Equilibrium solver

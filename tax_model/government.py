@@ -126,10 +126,6 @@ def compute_revenue(
 
     # --- Capital gains tax ---
     # Capital gains are a share of capital income; effective rate accounts for lock-in
-    cg_income = sum(
-        cal.income_distribution.capital_gains_shares[g]
-        for g in GROUPS
-    ) * capital_income  # effectively = total capital gains = capital income (simplified)
     cg_income = capital_income * 0.30  # approx: 30% of capital income realized as gains annually
     cg_effective_rate = policy.capital_gains.effective_rate
     if policy.capital_gains.inflation_indexed:
@@ -139,6 +135,20 @@ def compute_revenue(
         cg_income *= (1.0 - inflation_share)
     cg_revenue = cg_effective_rate * cg_income / gdp
 
+    # --- Estate tax ---
+    # Approximation: Q5_top holds ~40% of all capital. Above-exemption estate fraction
+    # ≈ 0.70 at US 2024 exemption level (~$13.6M covers top 0.1% but not all of Q5_top wealth)
+    _ESTATE_ABOVE_EXEMPTION = 0.70
+    _Q5_TOP_CAPITAL_SHARE = 0.40
+    estate_revenue = (
+        policy.estate.rate
+        * policy.estate.enforcement_fraction
+        * _ESTATE_ABOVE_EXEMPTION
+        * _Q5_TOP_CAPITAL_SHARE
+        * alloc.capital_stock  # normalized K/Y
+        * cal.production.capital_share  # capital income share
+    )
+
     return RevenueBreakdown(
         labor_income_tax=max(0.0, labor_revenue),
         payroll_tax=max(0.0, payroll_revenue),
@@ -147,6 +157,7 @@ def compute_revenue(
         corporate_tax=max(0.0, corp_revenue),
         pigouvian_tax=max(0.0, pig_net),
         capital_gains_tax=max(0.0, cg_revenue),
+        estate_tax=max(0.0, estate_revenue),
         prebate_cost=prebate_cost,
         pigouvian_dividend_cost=pig_dividend,
     )
@@ -179,19 +190,13 @@ def compute_incidence(
 
     burden: Dict[str, float] = {g: 0.0 for g in GROUPS}
 
-    # Representative income multiples per group (multiples of median household income)
-    group_income_multiples = {
-        "Q1": 0.20, "Q2": 0.55, "Q3": 0.90,
-        "Q4": 1.40, "Q5_bottom": 2.80, "Q5_top": 8.00,
-    }
-
     # --- Labor income tax burden ---
     # Use GROUP-SPECIFIC effective rates (not the GDP-average), so that
     # progressive brackets produce progressive incidence.
     for g in GROUPS:
         labor_share_g = dist.labor_income_shares[g]
         eff_rate_g = policy.labor_income.effective_rate_for_income_multiple(
-            group_income_multiples[g]
+            _GROUP_INCOME_MULTIPLES[g]
         )
         eti_adj = 1.0 - cal.macro.elasticity_of_taxable_income * eff_rate_g * 0.5
         burden[g] += eff_rate_g * labor_share_g * eti_adj
@@ -203,7 +208,7 @@ def compute_incidence(
         for g in GROUPS:
             labor_share_g = dist.labor_income_shares[g]
             payroll_rate_g = policy.payroll.effective_rate_for_income_multiple(
-                group_income_multiples[g]
+                _GROUP_INCOME_MULTIPLES[g]
             )
             burden[g] += payroll_rate_g * labor_share_g
 
@@ -274,6 +279,18 @@ def compute_incidence(
             cg_share_g = dist.capital_gains_shares[g]
             burden[g] += total_cg * cg_share_g
 
+    # --- Estate tax burden ---
+    # Falls primarily on Q5_top capital owners (top 1% of wealth holders).
+    # ~85% of estate tax burden falls on Q5_top, ~12% on Q5_bottom, ~3% on Q4.
+    if policy.estate.rate > 0:
+        total_estate = revenue.estate_tax
+        _ESTATE_INCIDENCE = {
+            "Q1": 0.00, "Q2": 0.00, "Q3": 0.00,
+            "Q4": 0.03, "Q5_bottom": 0.12, "Q5_top": 0.85,
+        }
+        for g in GROUPS:
+            burden[g] += total_estate * _ESTATE_INCIDENCE[g]
+
     # --- Normalize: express burden as fraction of group's income share ---
     # Burden[g] is currently in units of (fraction of total GDP).
     # Normalize by income_share[g] to get burden as fraction of group pre-tax income.
@@ -290,6 +307,112 @@ def compute_incidence(
             total_incidence[g] = 0.0
 
     return DistributionalIncidence.from_dict(total_incidence)
+
+
+# ---------------------------------------------------------------------------
+# Per-instrument incidence breakdown (for visualization)
+# ---------------------------------------------------------------------------
+
+# Representative income multiples per group (module-level to avoid repetition)
+_GROUP_INCOME_MULTIPLES: Dict[str, float] = {
+    "Q1": 0.20, "Q2": 0.55, "Q3": 0.90,
+    "Q4": 1.40, "Q5_bottom": 2.80, "Q5_top": 8.00,
+}
+
+
+def compute_instrument_incidence(
+    alloc: Allocation,
+    policy: TaxPolicy,
+    revenue: "RevenueBreakdown",
+    cal: Calibration,
+) -> Dict[str, Dict[str, float]]:
+    """
+    Per-instrument tax burden by income group, expressed as fraction of group income.
+
+    Returns Dict[instrument_name, Dict[group, burden_fraction]].
+    Summing across instruments approximately equals compute_incidence() totals.
+    """
+    dist = cal.income_distribution
+    mob  = cal.macro.capital_mobility
+
+    def _income_share(g: str) -> float:
+        return max(
+            0.65 * dist.labor_income_shares[g] + 0.35 * dist.capital_income_shares[g],
+            1e-9,
+        )
+
+    def _normalize(raw: Dict[str, float]) -> Dict[str, float]:
+        return {g: raw.get(g, 0.0) / _income_share(g) for g in GROUPS}
+
+    breakdown: Dict[str, Dict[str, float]] = {}
+
+    # Labor income tax
+    raw = {}
+    for g in GROUPS:
+        eff = policy.labor_income.effective_rate_for_income_multiple(_GROUP_INCOME_MULTIPLES[g])
+        eti_adj = 1.0 - cal.macro.elasticity_of_taxable_income * eff * 0.5
+        raw[g] = eff * dist.labor_income_shares[g] * eti_adj
+    breakdown["Labor Income Tax"] = _normalize(raw)
+
+    # Payroll tax
+    raw = {}
+    for g in GROUPS:
+        eff = policy.payroll.effective_rate_for_income_multiple(_GROUP_INCOME_MULTIPLES[g])
+        raw[g] = eff * dist.labor_income_shares[g]
+    breakdown["Payroll Tax"] = _normalize(raw)
+
+    # Consumption tax (tiered)
+    raw = {}
+    total_prebate = abs(revenue.prebate_cost)
+    pop_share = 1.0 / len(GROUPS)
+    for g in GROUPS:
+        eff = policy.consumption.effective_rate_for_group(g)
+        raw[g] = eff * dist.consumption_shares[g] - total_prebate * pop_share
+    breakdown["Consumption Tax"] = _normalize(raw)
+
+    # Corporate tax (capital/labor split by mobility)
+    raw = {}
+    total_corp = revenue.corporate_tax
+    for g in GROUPS:
+        raw[g] = (
+            total_corp * (1.0 - mob) * dist.capital_income_shares[g]
+            + total_corp * mob * dist.labor_income_shares[g]
+        )
+    breakdown["Corporate Tax"] = _normalize(raw)
+
+    # Capital gains tax
+    raw = {}
+    total_cg = revenue.capital_gains_tax
+    for g in GROUPS:
+        raw[g] = total_cg * dist.capital_gains_shares[g]
+    breakdown["Capital Gains Tax"] = _normalize(raw)
+
+    # Estate tax
+    _ESTATE_INCIDENCE = {
+        "Q1": 0.00, "Q2": 0.00, "Q3": 0.00,
+        "Q4": 0.03, "Q5_bottom": 0.12, "Q5_top": 0.85,
+    }
+    raw = {}
+    total_estate = revenue.estate_tax
+    for g in GROUPS:
+        raw[g] = total_estate * _ESTATE_INCIDENCE[g]
+    breakdown["Estate Tax"] = _normalize(raw)
+
+    # Land value tax
+    raw = {}
+    for g in GROUPS:
+        raw[g] = policy.land_value.rate * cal.land.land_value_gdp_ratio * cal.land.land_ownership_shares[g]
+    breakdown["Land Value Tax"] = _normalize(raw)
+
+    # Pigouvian tax (net of dividend)
+    raw = {}
+    total_pig = revenue.pigouvian_tax
+    total_div = abs(revenue.pigouvian_dividend_cost)
+    for g in GROUPS:
+        raw[g] = total_pig * cal.externality.carbon_consumption_shares[g] - total_div * pop_share
+    breakdown["Pigouvian Tax"] = _normalize(raw)
+
+    return breakdown
 
 
 # ---------------------------------------------------------------------------
@@ -312,19 +435,10 @@ def _avg_effective_labor_rate(policy: TaxPolicy, cal: Calibration) -> float:
         return total
 
     # Integrate brackets over income distribution using representative income multiples
-    # Each group is represented by its approximate median income multiple
-    group_income_multiples = {
-        "Q1": 0.20,
-        "Q2": 0.55,
-        "Q3": 0.90,
-        "Q4": 1.40,
-        "Q5_bottom": 2.80,
-        "Q5_top": 8.00,
-    }
     total_rate = 0.0
     for g in GROUPS:
         eff_rate = policy.labor_income.effective_rate_for_income_multiple(
-            group_income_multiples[g]
+            _GROUP_INCOME_MULTIPLES[g]
         )
         total_rate += eff_rate * dist.labor_income_shares[g]
     return total_rate
@@ -336,14 +450,10 @@ def _avg_effective_payroll_rate(policy: TaxPolicy, cal: Calibration) -> float:
     Accounts for the wage ceiling — regressive above the SS wage base.
     """
     dist = cal.income_distribution
-    group_income_multiples = {
-        "Q1": 0.20, "Q2": 0.55, "Q3": 0.90,
-        "Q4": 1.40, "Q5_bottom": 2.80, "Q5_top": 8.00,
-    }
     total_rate = 0.0
     for g in GROUPS:
         eff_rate = policy.payroll.effective_rate_for_income_multiple(
-            group_income_multiples[g]
+            _GROUP_INCOME_MULTIPLES[g]
         )
         total_rate += eff_rate * dist.labor_income_shares[g]
     return total_rate

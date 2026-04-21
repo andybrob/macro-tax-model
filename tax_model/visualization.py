@@ -105,11 +105,13 @@ def plot_revenue(comparison: PolicyComparison) -> plt.Figure:
     """
     instruments = [
         ("Labor income", "labor_income_tax"),
+        ("Payroll", "payroll_tax"),
         ("Consumption", "consumption_tax"),
         ("Land value", "land_value_tax"),
         ("Corporate", "corporate_tax"),
         ("Pigouvian", "pigouvian_tax"),
         ("Capital gains", "capital_gains_tax"),
+        ("Estate", "estate_tax"),
     ]
 
     base_rev = comparison.baseline.revenue
@@ -320,10 +322,10 @@ def plot_transition(transition_result) -> plt.Figure:
     tr = transition_result
     t  = tr.period_numbers
 
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+    fig, axes = plt.subplots(2, 2, figsize=(13, 8))
 
     # --- Panel 1: GDP ---
-    ax = axes[0]
+    ax = axes[0, 0]
     ax.plot(t, tr.gdp_path, color=_BLUE, linewidth=2)
     ax.axhline(tr.reform_ss.gdp,   color=_GREEN, linestyle="--", linewidth=1,
                label=f"Reform SS ({tr.reform_ss.gdp:.3f})")
@@ -333,31 +335,46 @@ def plot_transition(transition_result) -> plt.Figure:
     ax.set_ylabel("GDP (baseline = 1.0)")
     ax.set_title("GDP transition path")
     ax.legend(fontsize=8)
+    ax.spines[["top", "right"]].set_visible(False)
 
     # --- Panel 2: Capital ---
-    ax = axes[1]
+    ax = axes[0, 1]
     ax.plot(t, tr.capital_path, color=_ORANGE, linewidth=2)
     ax.axhline(tr.reform_ss.capital_stock,   color=_GREEN, linestyle="--", linewidth=1)
     ax.axhline(tr.baseline_ss.capital_stock, color=_GREY,  linestyle=":",  linewidth=1)
     ax.set_xlabel("Period")
     ax.set_ylabel("Capital stock (baseline = 1.0)")
     ax.set_title("Capital stock transition")
+    ax.spines[["top", "right"]].set_visible(False)
 
     # --- Panel 3: Incidence over time for key groups ---
-    ax = axes[2]
-    colors_by_group = {
-        "Q1": _GREEN, "Q3": _BLUE, "Q5_top": _RED,
-    }
+    ax = axes[1, 0]
+    colors_by_group = {"Q1": _GREEN, "Q3": _BLUE, "Q5_top": _RED}
     for group, color in colors_by_group.items():
         burden_path = tr.incidence_path(group)
-        ax.plot(t, [b * 100 for b in burden_path],
-                color=color, linewidth=2, label=group)
+        ax.plot(t, [b * 100 for b in burden_path], color=color, linewidth=2, label=group)
     ax.axhline(0, color=_DARK, linewidth=0.8)
     ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=100, decimals=1))
     ax.set_xlabel("Period")
     ax.set_ylabel("Tax burden (% of pre-tax income)")
-    ax.set_title("Incidence over transition\n(Q1, Q3, Q5_top)")
+    ax.set_title("Incidence over transition (Q1, Q3, Q5_top)")
     ax.legend(fontsize=8)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    # --- Panel 4: Cumulative debt path ---
+    ax = axes[1, 1]
+    budget_path = tr.series("budget_balance")
+    # Cumulative debt = initial debt + cumsum of deficits (negative budget balance adds to debt)
+    # Start from 0 (relative change vs. baseline budget balance at t=0)
+    baseline_balance = tr.baseline_ss.budget_balance
+    cumulative_debt  = np.cumsum([-(b - baseline_balance) for b in budget_path])
+    ax.plot(t, cumulative_debt * 100, color=_RED, linewidth=2)
+    ax.axhline(0, color=_DARK, linewidth=0.8)
+    ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=100, decimals=1))
+    ax.set_xlabel("Period")
+    ax.set_ylabel("Cumulative debt change (pp of GDP)")
+    ax.set_title("Fiscal path\n(cumulative debt vs. baseline)")
+    ax.spines[["top", "right"]].set_visible(False)
 
     fig.suptitle(
         f"Transition path: [{tr.baseline_ss.policy_label}] → [{tr.reform_ss.policy_label}]\n"
@@ -365,7 +382,7 @@ def plot_transition(transition_result) -> plt.Figure:
         f"Approx. convergence: period {tr.years_to_convergence()}",
         fontsize=10, fontweight="bold",
     )
-    fig.tight_layout(rect=[0, 0, 1, 0.90])
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
     return fig
 
 
@@ -391,11 +408,13 @@ def _draw_macro_bars_on(ax: plt.Axes, comparison: PolicyComparison) -> None:
 def _draw_revenue_on(ax: plt.Axes, comparison: PolicyComparison) -> None:
     instruments = [
         ("Labor", "labor_income_tax"),
+        ("Payroll", "payroll_tax"),
         ("Consump.", "consumption_tax"),
         ("Land", "land_value_tax"),
         ("Corp.", "corporate_tax"),
-        ("Pigouvian", "pigouvian_tax"),
+        ("Pig.", "pigouvian_tax"),
         ("Cap. gains", "capital_gains_tax"),
+        ("Estate", "estate_tax"),
     ]
     x = np.arange(len(instruments))
     w = 0.35
@@ -418,3 +437,113 @@ def _draw_incidence_on(ax: plt.Axes, comparison: PolicyComparison) -> None:
     ax.axhline(0, color=_DARK, linewidth=0.8)
     ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=100, decimals=1))
     ax.set_title("Burden change by group (pp)", fontsize=9)
+
+
+# ---------------------------------------------------------------------------
+# Per-instrument incidence stacked bar chart
+# ---------------------------------------------------------------------------
+
+def plot_instrument_incidence(
+    baseline_breakdown: Dict[str, Dict[str, float]],
+    reform_breakdown: Dict[str, Dict[str, float]],
+    baseline_label: str = "Baseline",
+    reform_label: str = "Reform",
+) -> plt.Figure:
+    """
+    Stacked bar chart of tax burden by instrument for each income group.
+    Side-by-side: baseline (left) and reform (right).
+
+    breakdown dicts: Dict[instrument_name, Dict[group, burden_fraction_of_group_income]]
+    """
+    instruments = list(baseline_breakdown.keys())
+    # Use a distinct color palette
+    palette = [
+        "#2166AC", "#D6604D", "#4DAC26", "#F4A582",
+        "#762A83", "#AF8DC3", "#1B7837", "#D9EF8B",
+    ]
+    colors = {inst: palette[i % len(palette)] for i, inst in enumerate(instruments)}
+
+    x = np.arange(len(GROUPS))
+    group_labels = [g.replace("_", "\n") for g in GROUPS]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
+
+    for ax, breakdown, title in [(ax1, baseline_breakdown, baseline_label),
+                                  (ax2, reform_breakdown, reform_label)]:
+        bottoms = np.zeros(len(GROUPS))
+        for inst in instruments:
+            vals = np.array([max(0.0, breakdown.get(inst, {}).get(g, 0.0)) * 100 for g in GROUPS])
+            ax.bar(x, vals, bottom=bottoms, color=colors[inst], label=inst, width=0.65)
+            bottoms += vals
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(group_labels, fontsize=9)
+        if ax is ax1:
+            ax.set_ylabel("Effective burden (% of group income)", fontsize=9)
+        ax.set_title(f"{title}", fontsize=10, fontweight="bold")
+        ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=100, decimals=0))
+        ax.spines[["top", "right"]].set_visible(False)
+
+    handles = [plt.Rectangle((0, 0), 1, 1, fc=colors[i]) for i in instruments]
+    fig.legend(handles, instruments, loc="lower center", ncol=4, fontsize=8,
+               bbox_to_anchor=(0.5, -0.08), frameon=False)
+    fig.suptitle("Tax burden by instrument and income group", fontsize=11, fontweight="bold")
+    fig.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Pareto frontier scatter
+# ---------------------------------------------------------------------------
+
+def plot_pareto_frontier(
+    frontier_data: List[Tuple[str, float, float]],
+) -> plt.Figure:
+    """
+    Scatter plot of GDP change (x) vs Q1 burden change (y, inverted: positive = Q1 better off).
+    Each point = one named preset vs Current Law.
+
+    frontier_data: list of (label, gdp_change_pct, q1_burden_change_pp)
+      where q1_burden_change_pp < 0 means Q1 burden FELL (reform helped Q1).
+    """
+    if not frontier_data:
+        fig, ax = plt.subplots(figsize=(7, 5))
+        ax.text(0.5, 0.5, "No frontier data available", ha="center", va="center",
+                transform=ax.transAxes)
+        return fig
+
+    labels, gdp_changes, q1_changes = zip(*frontier_data)
+
+    # Flip Q1 sign: positive on chart = Q1 better off
+    q1_display = [-v for v in q1_changes]
+
+    scatter_colors = [_GREEN if y >= 0 else _RED for y in q1_display]
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.scatter(gdp_changes, q1_display, c=scatter_colors, s=140, zorder=5,
+               edgecolors="white", linewidths=1.5)
+
+    for i, label in enumerate(labels):
+        ax.annotate(
+            label,
+            (gdp_changes[i], q1_display[i]),
+            textcoords="offset points",
+            xytext=(7, 3),
+            fontsize=7.5,
+            color=_DARK,
+        )
+
+    ax.axhline(0, color=_GREY, linewidth=0.8, linestyle="--")
+    ax.axvline(0, color=_GREY, linewidth=0.8, linestyle="--")
+    ax.xaxis.set_major_formatter(mtick.PercentFormatter(decimals=1))
+    ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=100, decimals=1))
+    ax.set_xlabel("Long-run GDP change vs Current Law (%)", fontsize=10)
+    ax.set_ylabel("Q1 burden change (pp of income)\npositive = Q1 better off", fontsize=10)
+    ax.set_title("Growth–Equity Frontier: All Presets vs Current Law", fontsize=11, fontweight="bold")
+    ax.text(0.97, 0.97, "↗ better on both", transform=ax.transAxes,
+            ha="right", va="top", fontsize=9, color=_GREEN, alpha=0.8)
+    ax.text(0.97, 0.03, "↘ growth only", transform=ax.transAxes,
+            ha="right", va="bottom", fontsize=9, color=_RED, alpha=0.8)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
+    return fig

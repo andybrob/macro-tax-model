@@ -54,6 +54,7 @@ class RevenueBreakdown:
     corporate_tax: float = 0.0
     pigouvian_tax: float = 0.0
     capital_gains_tax: float = 0.0
+    estate_tax: float = 0.0
     prebate_cost: float = 0.0          # negative (outflow)
     pigouvian_dividend_cost: float = 0.0   # negative (outflow)
 
@@ -67,6 +68,7 @@ class RevenueBreakdown:
             + self.corporate_tax
             + self.pigouvian_tax
             + self.capital_gains_tax
+            + self.estate_tax
             + self.prebate_cost
             + self.pigouvian_dividend_cost
         )

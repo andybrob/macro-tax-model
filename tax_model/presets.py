@@ -35,6 +35,7 @@ from .policy import (
     CorporateTax,
     PigouvianTax,
     CapitalGainsTax,
+    EstateTax,
 )
 
 # ---------------------------------------------------------------------------
@@ -219,6 +220,7 @@ def capital_gains_reform() -> TaxPolicy:
             rate=0.42,           # matches top ordinary rate (37% federal + 5% state)
             inflation_indexed=True,
             lock_in_discount=0.35,  # higher lock-in at higher rate
+            stepped_up_basis_removal_fraction=0.50,  # partial removal of step-up at death
         ),
         consumption=ConsumptionTax(rate=0.02),
     )

@@ -82,15 +82,38 @@ class LaborIncomeTax:
 @dataclass
 class ConsumptionTax:
     """
-    Flat consumption tax (VAT or retail sales tax equivalent) with optional prebate.
+    Consumption tax (VAT or retail sales tax) with optional prebate and tiered rates.
 
-    rate: fraction of consumption expenditure
+    rate: standard rate (fraction of consumption expenditure)
     prebate_fraction: fraction of poverty-line consumption returned as equal
-                      per-capita lump-sum transfer. 0 = no prebate, 1 = full
-                      poverty-line prebate (makes effective rate negative for Q1/Q2).
+                      per-capita lump-sum transfer.
+    essentials_rate: reduced rate for food, medicine, basic housing. None = use rate.
+    luxury_rate: elevated rate for luxury goods. None = use rate.
     """
     rate: float = 0.0
     prebate_fraction: float = 0.0
+    essentials_rate: Optional[float] = None
+    luxury_rate: Optional[float] = None
+
+    def effective_rate_for_group(self, group: str) -> float:
+        """
+        Income-group-specific effective consumption tax rate accounting for tiered rates.
+        Spending shares from CEX data (essentials / standard / luxury by income quintile).
+        """
+        # CEX-based spending shares: (essentials_share, standard_share, luxury_share)
+        _SPENDING_SHARES = {
+            "Q1":        (0.55, 0.42, 0.03),
+            "Q2":        (0.48, 0.46, 0.06),
+            "Q3":        (0.38, 0.52, 0.10),
+            "Q4":        (0.28, 0.55, 0.17),
+            "Q5_bottom": (0.22, 0.53, 0.25),
+            "Q5_top":    (0.15, 0.50, 0.35),
+        }
+        ess_r = self.essentials_rate if self.essentials_rate is not None else self.rate
+        lux_r = self.luxury_rate if self.luxury_rate is not None else self.rate
+        std_r = self.rate
+        s_ess, s_std, s_lux = _SPENDING_SHARES.get(group, (0.30, 0.55, 0.15))
+        return s_ess * ess_r + s_std * std_r + s_lux * lux_r
 
 
 @dataclass
@@ -159,16 +182,25 @@ class CapitalGainsTax:
     lock_in_discount: fraction by which effective rate is reduced relative to
                       statutory rate due to realization-based deferral (lock-in
                       effect). 0.3 is a reasonable estimate for US law.
+    stepped_up_basis_removal_fraction: fraction of stepped-up basis benefit removed.
+                      0 = current law (heirs inherit cost basis = FMV at death).
+                      1 = full removal (heirs inherit decedent's original cost basis).
+                      Removing step-up reduces lock-in: gains can no longer be
+                      permanently avoided by holding until death.
     """
     rate: float = 0.0
     inflation_indexed: bool = False
     inflation_rate: float = 0.025
     lock_in_discount: float = 0.30
+    stepped_up_basis_removal_fraction: float = 0.0
 
     @property
     def effective_rate(self) -> float:
-        """Effective rate after lock-in discount."""
-        return self.rate * (1.0 - self.lock_in_discount)
+        """Effective rate after lock-in discount, adjusted for stepped-up basis removal."""
+        # Removing stepped-up basis reduces lock-in (gains taxed at death, not permanently deferred)
+        # Full removal reduces lock-in by ~60% (empirical estimate of step-up's share of lock-in)
+        adjusted_lock_in = self.lock_in_discount * (1.0 - 0.60 * self.stepped_up_basis_removal_fraction)
+        return self.rate * (1.0 - adjusted_lock_in)
 
 
 @dataclass
@@ -209,6 +241,26 @@ class PayrollTax:
 
 
 @dataclass
+class EstateTax:
+    """
+    Estate / wealth transfer tax.
+
+    Models federal estate tax on large inheritances.
+    Revenue is approximated as a levy on Q5_top capital holdings above the exemption.
+
+    rate: top marginal rate (e.g. 0.40 = 40%)
+    exemption_median_multiple: exemption threshold as a multiple of median income.
+                               US 2024 exemption ~$13.6M ≈ 170× median.
+    enforcement_fraction: fraction of theoretical revenue actually collected
+                          after legal avoidance (trusts, GRATs, valuation discounts).
+                          Current law ≈ 0.30; better enforcement could reach 0.60+.
+    """
+    rate: float = 0.0
+    exemption_median_multiple: float = 170.0
+    enforcement_fraction: float = 0.30
+
+
+@dataclass
 class TaxPolicy:
     """
     A complete tax policy configuration.
@@ -231,6 +283,7 @@ class TaxPolicy:
     corporate: CorporateTax = field(default_factory=CorporateTax)
     pigouvian: PigouvianTax = field(default_factory=PigouvianTax)
     capital_gains: CapitalGainsTax = field(default_factory=CapitalGainsTax)
+    estate: EstateTax = field(default_factory=EstateTax)
     revenue_neutral: bool = False
 
     def to_dict(self) -> dict:
